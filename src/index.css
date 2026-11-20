@@ -88,6 +88,64 @@ canvas {
   font-variant-numeric: tabular-nums;
 }
 
+/* ---------- Estado de conexión ---------- */
+.conn {
+  position: absolute;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  backdrop-filter: blur(10px);
+  white-space: nowrap;
+}
+
+.conn-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #64748b;
+}
+
+.conn.online {
+  color: var(--ok);
+  border-color: rgba(52, 211, 153, 0.35);
+}
+
+.conn.online .conn-dot {
+  background: var(--ok);
+  box-shadow: 0 0 8px rgba(52, 211, 153, 0.8);
+}
+
+.conn.connecting {
+  color: var(--warn);
+  border-color: rgba(251, 191, 36, 0.35);
+}
+
+.conn.connecting .conn-dot {
+  background: var(--warn);
+  animation: pulse 1s ease-in-out infinite;
+}
+
+.room-line {
+  margin: -8px 0 18px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #b9c6dc;
+  background: rgba(56, 189, 248, 0.08);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+}
+
 .small {
   font-size: 11.5px;
   line-height: 1.35;

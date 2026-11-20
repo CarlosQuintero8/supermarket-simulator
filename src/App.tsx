@@ -3,10 +3,15 @@ import { Canvas } from '@react-three/fiber'
 import * as THREE from 'three'
 import { Scene } from './scene/Scene'
 import { HUD } from './ui/HUD'
+import { initNetwork } from './game/store'
 
 export default function App() {
   const [playing, setPlaying] = useState(false)
   const hadLock = useRef(false)
+
+  useEffect(() => {
+    initNetwork()
+  }, [])
 
   useEffect(() => {
     const onChange = () => {

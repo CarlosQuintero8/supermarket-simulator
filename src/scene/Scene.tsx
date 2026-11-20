@@ -1,6 +1,7 @@
 import { Checkout } from './Checkout'
 import { Customers } from './Customers'
 import { Player } from './Player'
+import { RemotePlayers } from './RemotePlayers'
 import { RestockPallet } from './RestockPallet'
 import { ShelfUnits } from './ShelfUnit'
 import { StoreRoom } from './StoreRoom'
@@ -22,6 +23,7 @@ export function Scene({ playing }: { playing: boolean }) {
       <Checkout />
       <RestockPallet />
       <Customers playing={playing} />
+      <RemotePlayers />
       <Player playing={playing} />
     </>
   )

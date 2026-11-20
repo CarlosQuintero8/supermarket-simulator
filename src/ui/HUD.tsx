@@ -1,6 +1,7 @@
 import { useEffect, useMemo } from 'react'
 import { PRODUCTS, SHELF_CAPACITY, eur, productById, round2 } from '../game/products'
 import { useGame } from '../game/store'
+import { net } from '../game/net'
 
 type Props = { playing: boolean; onPlay: () => void }
 
@@ -39,6 +40,8 @@ export function HUD({ playing, onPlay }: Props) {
   const hoverKey = useGame((s) => s.hoverKey)
   const toast = useGame((s) => s.toast)
   const clearToast = useGame((s) => s.clearToast)
+  const connection = useGame((s) => s.connection)
+  const playerCount = useGame((s) => s.playerCount)
 
   const restockCost = useMemo(
     () =>
@@ -66,6 +69,16 @@ export function HUD({ playing, onPlay }: Props) {
         <div className="muted small">
           {sold} {sold === 1 ? 'artículo vendido' : 'artículos vendidos'}
         </div>
+      </div>
+
+      {/* Estado de conexión */}
+      <div className={`conn ${connection}`}>
+        <span className="conn-dot" />
+        {connection === 'online'
+          ? `En línea · ${playerCount} ${playerCount === 1 ? 'jugador' : 'jugadores'}`
+          : connection === 'connecting'
+            ? 'Conectando…'
+            : 'Un jugador'}
       </div>
 
       {/* Caja */}
@@ -197,6 +210,14 @@ export function HUD({ playing, onPlay }: Props) {
               escanea sus productos y cóbrales en efectivo o con tarjeta. Repón en el almacén
               cuando se vacíen las estanterías.
             </p>
+
+            {connection === 'online' && (
+              <div className="room-line">
+                Sala «{net.room}» · {playerCount}{' '}
+                {playerCount === 1 ? 'jugador conectado' : 'jugadores conectados'} · comparte la URL
+                para jugar juntos
+              </div>
+            )}
 
             <div className="controls">
               <div>

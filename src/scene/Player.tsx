@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { interactionKey, useGame, type Interaction } from '../game/store'
+import { net } from '../game/net'
 import {
   INTERACT_DISTANCE,
   PLAYER_EYE,
@@ -193,6 +194,9 @@ export function Player({ playing }: { playing: boolean }) {
       position.current.z,
     )
     camera.rotation.set(pitch.current, yaw.current, 0, 'YXZ')
+
+    // En coop, avisar a los demás de dónde estamos (10 Hz, solo si cambió).
+    net.sendMove(position.current.x, position.current.z, yaw.current)
 
     // --- interacción (rayo desde el centro de la pantalla) ---
     raycaster.setFromCamera(screenCenter, camera)

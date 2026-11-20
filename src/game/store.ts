@@ -1,40 +1,94 @@
 import { create } from 'zustand'
-import { PRODUCTS, SHELF_CAPACITY, eur, productById, round2 } from './products'
+import {
+  createSim,
+  pay as simPay,
+  restock as simRestock,
+  scanNext as simScan,
+  tick as simTick,
+  type PaymentMethod,
+  type SimEvent,
+  type SimState,
+  type Snapshot,
+  type Ticket,
+} from './sim'
+import { live, type ConnectionMode } from './live'
+import { initNet, net } from './net'
 
 export type ToastKind = 'ok' | 'warn' | 'bad'
 export type Toast = { id: number; text: string; kind: ToastKind }
 
 export type Interaction = { kind: 'checkout' } | { kind: 'restock' }
-export type PaymentMethod = 'cash' | 'card'
-
-export type Ticket = {
-  customerId: number
-  items: string[]
-  /** productos ya escaneados (los N primeros de `items`) */
-  scanned: number
-  /** subtotal de lo escaneado */
-  total: number
-}
-
-let toastSeq = 0
-
-/**
- * El motor de clientes avisa aquí cuando un cobro se completa.
- * Se registra desde `customers.ts` para que el store no dependa de él.
- */
-export type PaidHandler = (customerId: number, method: PaymentMethod, total: number) => void
-
-let onPaid: PaidHandler | null = null
-export function setPaidHandler(handler: PaidHandler) {
-  onPaid = handler
-}
+export type { PaymentMethod }
 
 export function interactionKey(interaction: Interaction): string {
   return interaction.kind
 }
 
-function emptyStock(): Record<string, number> {
-  return Object.fromEntries(PRODUCTS.map((p) => [p.id, SHELF_CAPACITY]))
+/** La simulación local (modo un jugador). En coop manda el servidor. */
+const local = createSim()
+
+let toastSeq = 0
+
+type HudPatch = {
+  money: number
+  stock: Record<string, number>
+  sold: number
+  queueLength: number
+  ticket: Ticket | null
+  cardPending: boolean
+  customerIds: number[]
+  remoteIds: string[]
+}
+
+function sameIds(a: readonly number[], b: readonly number[]) {
+  return a.length === b.length && a.every((value, index) => value === b[index])
+}
+
+function sameStrings(a: readonly string[], b: readonly string[]) {
+  return a.length === b.length && a.every((value, index) => value === b[index])
+}
+
+function sameStock(a: Record<string, number>, b: Record<string, number>) {
+  const keys = Object.keys(a)
+  if (keys.length !== Object.keys(b).length) return false
+  return keys.every((key) => a[key] === b[key])
+}
+
+function sameTicket(a: Ticket | null, b: Ticket | null) {
+  if (a === b) return true
+  if (!a || !b) return false
+  return (
+    a.customerId === b.customerId &&
+    a.scanned === b.scanned &&
+    a.total === b.total &&
+    a.items.length === b.items.length
+  )
+}
+
+function hudFromSim(state: SimState): HudPatch {
+  return {
+    money: state.money,
+    stock: state.stock,
+    sold: state.sold,
+    queueLength: state.queue.length,
+    ticket: state.ticket,
+    cardPending: state.pending !== null,
+    customerIds: state.customers.map((c) => c.id),
+    remoteIds: [],
+  }
+}
+
+function hudFromSnapshot(snap: Snapshot): HudPatch {
+  return {
+    money: snap.money,
+    stock: snap.stock,
+    sold: snap.sold,
+    queueLength: snap.queueLength,
+    ticket: snap.ticket,
+    cardPending: snap.cardPending,
+    customerIds: snap.customers.map((c) => c.id),
+    remoteIds: snap.players.filter((p) => p.id !== live.myId).map((p) => p.id),
+  }
 }
 
 type GameState = {
@@ -46,6 +100,10 @@ type GameState = {
   cardPending: boolean
   queueLength: number
   customerIds: number[]
+  remoteIds: string[]
+
+  connection: ConnectionMode
+  playerCount: number
 
   hoverKey: string | null
   toast: Toast | null
@@ -53,28 +111,27 @@ type GameState = {
   say: (text: string, kind?: ToastKind) => void
   clearToast: () => void
   setHover: (key: string | null) => void
+  setConnection: (mode: ConnectionMode, players: number) => void
+  applyHud: (patch: HudPatch) => void
 
-  openTicket: (customerId: number, items: string[]) => void
   scanNext: () => void
   pay: (method: PaymentMethod) => void
-
-  takeFromShelf: (productId: string, count: number) => number
-  setQueue: (length: number) => void
-  setCustomerIds: (ids: number[]) => void
-
   restock: () => void
-  reset: () => void
 }
 
-export const useGame = create<GameState>((set, get) => ({
-  money: 24.5,
-  stock: emptyStock(),
-  sold: 0,
+export const useGame = create<GameState>((set) => ({
+  money: local.money,
+  stock: local.stock,
+  sold: local.sold,
 
   ticket: null,
   cardPending: false,
   queueLength: 0,
   customerIds: [],
+  remoteIds: [],
+
+  connection: 'local',
+  playerCount: 1,
 
   hoverKey: null,
   toast: null,
@@ -83,136 +140,99 @@ export const useGame = create<GameState>((set, get) => ({
   clearToast: () => set({ toast: null }),
   setHover: (key) => set((s) => (s.hoverKey === key ? s : { hoverKey: key })),
 
-  setQueue: (length) => set((s) => (s.queueLength === length ? s : { queueLength: length })),
-  setCustomerIds: (ids) => set({ customerIds: ids }),
+  setConnection: (mode, players) =>
+    set((s) =>
+      s.connection === mode && s.playerCount === players ? s : { connection: mode, playerCount: players },
+    ),
 
-  /** Un cliente llega al mostrador con su cesta. */
-  openTicket: (customerId, items) =>
+  /** Solo escribe las claves que han cambiado: un snapshot a 15 Hz no debe repintar el HUD. */
+  applyHud: (patch) =>
     set((s) => {
-      if (s.ticket || items.length === 0) return s
-      return { ticket: { customerId, items, scanned: 0, total: 0 } }
+      const next: Partial<GameState> = {}
+      if (s.money !== patch.money) next.money = patch.money
+      if (s.sold !== patch.sold) next.sold = patch.sold
+      if (s.queueLength !== patch.queueLength) next.queueLength = patch.queueLength
+      if (s.cardPending !== patch.cardPending) next.cardPending = patch.cardPending
+      if (!sameStock(s.stock, patch.stock)) next.stock = patch.stock
+      if (!sameTicket(s.ticket, patch.ticket)) next.ticket = patch.ticket
+      if (!sameIds(s.customerIds, patch.customerIds)) next.customerIds = patch.customerIds
+      if (!sameStrings(s.remoteIds, patch.remoteIds)) next.remoteIds = patch.remoteIds
+      return Object.keys(next).length > 0 ? next : s
     }),
 
   scanNext: () => {
-    const { ticket, cardPending, say } = get()
-    if (cardPending) return
-    if (!ticket) {
-      say('No hay ningún cliente en la caja.', 'warn')
+    if (live.mode === 'online') {
+      net.send({ t: 'scan' })
       return
     }
-    if (ticket.scanned >= ticket.items.length) {
-      say('Todo escaneado · F efectivo · T tarjeta', 'warn')
-      return
-    }
-
-    const product = productById(ticket.items[ticket.scanned])
-    set({
-      ticket: {
-        ...ticket,
-        scanned: ticket.scanned + 1,
-        total: round2(ticket.total + product.price),
-      },
-      toast: {
-        id: ++toastSeq,
-        kind: 'ok',
-        text: `${product.name} · ${eur(product.price)}`,
-      },
-    })
+    if (live.mode !== 'local') return
+    pushEvents(simScan(local))
+    refreshLocal()
   },
 
   pay: (method) => {
-    const state = get()
-    const ticket = state.ticket
-
-    if (state.cardPending) return
-    if (!ticket) {
-      state.say('No hay ningún cliente en la caja.', 'warn')
+    if (live.mode === 'online') {
+      net.send({ t: 'pay', method })
       return
     }
-    if (ticket.scanned < ticket.items.length) {
-      const missing = ticket.items.length - ticket.scanned
-      state.say(`Faltan ${missing} ${missing === 1 ? 'producto' : 'productos'} por escanear.`, 'warn')
-      return
-    }
-
-    const { total, customerId } = ticket
-    const itemCount = ticket.items.length
-
-    const complete = () => {
-      const current = get()
-      const note = [5, 10, 20, 50].find((n) => n >= total) ?? Math.ceil(total / 50) * 50
-      const change = round2(note - total)
-
-      set({
-        money: round2(current.money + total),
-        sold: current.sold + itemCount,
-        ticket: null,
-        cardPending: false,
-        toast: {
-          id: ++toastSeq,
-          kind: 'ok',
-          text:
-            method === 'cash'
-              ? `Efectivo ${eur(note)} · cambio ${eur(change)}`
-              : `Tarjeta aprobada · ${eur(total)}`,
-        },
-      })
-
-      onPaid?.(customerId, method, total)
-    }
-
-    if (method === 'card') {
-      set({ cardPending: true })
-      window.setTimeout(complete, 1500)
-    } else {
-      complete()
-    }
-  },
-
-  takeFromShelf: (productId, count) => {
-    const { stock } = get()
-    const available = stock[productId] ?? 0
-    const taken = Math.min(available, Math.max(0, Math.floor(count)))
-    if (taken <= 0) return 0
-    set({ stock: { ...stock, [productId]: available - taken } })
-    return taken
+    if (live.mode !== 'local') return
+    pushEvents(simPay(local, method))
+    refreshLocal()
   },
 
   restock: () => {
-    const { stock, money, say } = get()
-
-    const missingUnits = PRODUCTS.reduce((acc, p) => acc + (SHELF_CAPACITY - stock[p.id]), 0)
-    if (missingUnits === 0) {
-      say('Todas las estanterías están llenas.', 'warn')
+    if (live.mode === 'online') {
+      net.send({ t: 'restock' })
       return
     }
-
-    const cost = round2(
-      PRODUCTS.reduce((acc, p) => acc + (SHELF_CAPACITY - stock[p.id]) * p.cost, 0),
-    )
-
-    if (cost > money) {
-      say(`Reponer cuesta ${eur(cost)} y tienes ${eur(money)}.`, 'bad')
-      return
-    }
-
-    set({
-      money: round2(money - cost),
-      stock: emptyStock(),
-      toast: { id: ++toastSeq, text: `Repuesto · -${eur(cost)}`, kind: 'warn' },
-    })
+    if (live.mode !== 'local') return
+    pushEvents(simRestock(local))
+    refreshLocal()
   },
-
-  reset: () =>
-    set({
-      money: 24.5,
-      stock: emptyStock(),
-      sold: 0,
-      ticket: null,
-      cardPending: false,
-      queueLength: 0,
-      customerIds: [],
-      hoverKey: null,
-      toast: null,
-    }),
 }))
+
+// ------------------------------------------------------------------- puente
+
+function pushEvents(events: SimEvent[]) {
+  const last = events[events.length - 1]
+  if (last) useGame.getState().say(last.text, last.kind)
+}
+
+function refreshLocal() {
+  live.customers = local.customers
+  live.players = []
+  useGame.getState().applyHud(hudFromSim(local))
+}
+
+/** Avanza la tienda en modo un jugador. En coop lo hace el servidor. */
+export function tickWorld(dt: number) {
+  if (live.mode !== 'local') return
+  pushEvents(simTick(local, dt))
+  refreshLocal()
+}
+
+/** Conecta (si hay servidor) y engancha los snapshots al HUD y al render. */
+export function initNetwork() {
+  initNet({
+    onWelcome: (playerId, name) => {
+      live.myId = playerId
+      live.myName = name
+    },
+    onSnapshot: (snap) => {
+      live.customers = snap.customers
+      live.players = snap.players
+      live.mode = 'online'
+      const game = useGame.getState()
+      game.applyHud(hudFromSnapshot(snap))
+      game.setConnection('online', snap.players.length)
+    },
+    onEvents: (events) => pushEvents(events),
+    onStatus: (mode, players) => {
+      if (mode === 'local') {
+        live.customers = local.customers
+        live.players = []
+      }
+      useGame.getState().setConnection(mode, players)
+    },
+  })
+}

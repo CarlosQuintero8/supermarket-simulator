@@ -37,3 +37,28 @@ export function makeLabelTexture(text: string, bg = '#0f172a', fg = '#e2e8f0'): 
   texture.anisotropy = 4
   return texture
 }
+
+/** Cartel pequeño para el nombre sobre la cabeza de otro jugador. */
+export function makeNameTexture(text: string, accent = '#9fd0ff'): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas')
+  canvas.width = 256
+  canvas.height = 64
+
+  const ctx = canvas.getContext('2d')!
+  ctx.fillStyle = 'rgba(8, 14, 26, 0.82)'
+  ctx.fillRect(6, 10, 244, 44)
+  ctx.strokeStyle = accent
+  ctx.lineWidth = 3
+  ctx.strokeRect(6, 10, 244, 44)
+
+  ctx.fillStyle = '#eaf2ff'
+  ctx.font = 'bold 26px system-ui, "Segoe UI", sans-serif'
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.fillText(text.slice(0, 14), 128, 33)
+
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.colorSpace = THREE.SRGBColorSpace
+  texture.anisotropy = 4
+  return texture
+}
